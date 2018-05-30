@@ -66,6 +66,8 @@
 /* debug */
 #include "mac_assert.h"
 
+//add by gjh
+#include "hal_uart.h"
 
 /* ------------------------------------------------------------------------------------------------
  *                                            Defines
@@ -89,13 +91,13 @@
 #define CMD_FRAME_ID_LEN      1
 
 /* packet size mask is equal to the maximum value */
-#define PHY_PACKET_SIZE_MASK  0x7F
+#define PHY_PACKET_SIZE_MASK  0x7F      //最多127个字节
 
 /* value for promiscuous off, must not conflict with other mode variants from separate include files */
 #define PROMISCUOUS_MODE_OFF  0x00
 
 /* bit of proprietary FCS format that indicates if the CRC is OK */
-#define PROPRIETARY_FCS_CRC_OK_BIT  0x80
+#define PROPRIETARY_FCS_CRC_OK_BIT  0x80     //最高位为1
 
 /* dummy length value for unused entry in lookup table */
 #define DUMMY_LEN   0xBE
@@ -130,8 +132,8 @@
  *  These macros decode the proprietary FCS.  The macro parameter is a pointer to the two byte FCS.
  */
 #define PROPRIETARY_FCS_RSSI(p)                 ((int8)((p)[0]))
-#define PROPRIETARY_FCS_CRC_OK(p)               ((p)[1] & PROPRIETARY_FCS_CRC_OK_BIT)
-#define PROPRIETARY_FCS_CORRELATION_VALUE(p)    ((p)[1] & ~PROPRIETARY_FCS_CRC_OK_BIT)
+#define PROPRIETARY_FCS_CRC_OK(p)               ((p)[1] & PROPRIETARY_FCS_CRC_OK_BIT)    //取最高位
+#define PROPRIETARY_FCS_CORRELATION_VALUE(p)    ((p)[1] & ~PROPRIETARY_FCS_CRC_OK_BIT)   //取低7位
 
 
 /* ------------------------------------------------------------------------------------------------
@@ -140,19 +142,19 @@
  */
 uint8 macRxActive;
 uint8 macRxFilter;
-uint8 macRxOutgoingAckFlag;
+uint8 macRxOutgoingAckFlag;     //此变量用于存储帧控制域中的ACK请求位
 
 
 /* ------------------------------------------------------------------------------------------------
  *                                       Local Constants
  * ------------------------------------------------------------------------------------------------
  */
-static const uint8 CODE macRxAddrLen[] =
+static const uint8 CODE macRxAddrLen[] =             //用于匹配究竟MAC帧用的是何种地址模式，源、目的地址模式总共有4种
 {
-  0,                                                /* no address */
-  DUMMY_LEN,                                        /* reserved */
-  MAC_PAN_ID_FIELD_LEN + MAC_SHORT_ADDR_FIELD_LEN,  /* short address + pan id */
-  MAC_PAN_ID_FIELD_LEN + MAC_EXT_ADDR_FIELD_LEN     /* extended address + pan id */
+  0,                                                /* no address */    //不存在PAN标识符子域和地址子域
+  DUMMY_LEN,                                        /* reserved */      //保留的
+  MAC_PAN_ID_FIELD_LEN + MAC_SHORT_ADDR_FIELD_LEN,  /* short address + pan id */       //16位短地址
+  MAC_PAN_ID_FIELD_LEN + MAC_EXT_ADDR_FIELD_LEN     /* extended address + pan id */    //64位扩展地址
 };
 
 
@@ -162,16 +164,16 @@ static const uint8 CODE macRxAddrLen[] =
  */
 static void rxHaltCleanupFinalStep(void);
 
-static void rxStartIsr(void);
-static void rxAddrIsr(void);
-static void rxPayloadIsr(void);
-static void rxDiscardIsr(void);
-static void rxFcsIsr(void);
+static void rxStartIsr(void);      //刚收到packet的中断服务程序，    第1个执行
+static void rxAddrIsr(void);       //处理地址的中断服务程序，        第2个执行
+static void rxPayloadIsr(void);    //payload数据接收的中断服务程序， 第3个执行
+static void rxDiscardIsr(void);    //处理丢弃packet的中断服务程序，  
+static void rxFcsIsr(void);        //处理FCS的中断服务程序，
 
 static void rxPrepPayload(void);
 static void rxDiscardFrame(void);
-static void rxDone(void);
-static void rxPostRxUpdates(void);
+static void rxDone(void);           //packet接收完的中断服务程序， 第 个执行
+static void rxPostRxUpdates(void);  //packet接收完后需更新的中断服务程序， 最后执行
 
 
 /* ------------------------------------------------------------------------------------------------
@@ -179,9 +181,9 @@ static void rxPostRxUpdates(void);
  * ------------------------------------------------------------------------------------------------
  */
 static void    (* pFuncRxState)(void);
-static macRx_t  * pRxBuf;
+static macRx_t  * pRxBuf;      //存储数据的struct
 
-static uint8  rxBuf[MAC_PHY_PHR_LEN + MAC_FCF_FIELD_LEN + MAC_SEQ_NUM_FIELD_LEN];
+static uint8  rxBuf[MAC_PHY_PHR_LEN + MAC_FCF_FIELD_LEN + MAC_SEQ_NUM_FIELD_LEN];   // 物理帧头 1字节 + 帧控制域 2字节 + 序列号 1字节 = 4字节
 static uint8  rxUnreadLen;
 static uint8  rxNextLen;
 static uint8  rxPayloadLen;
@@ -205,10 +207,10 @@ static uint8  rxFifoOverflowCount;
 MAC_INTERNAL_API void macRxInit(void)
 {
   macRxFilter          = RX_FILTER_OFF;
-  rxPromiscuousMode    = PROMISCUOUS_MODE_OFF;
+  rxPromiscuousMode    = PROMISCUOUS_MODE_OFF;   //原先是关闭混杂模式：PROMISCUOUS_MODE_OFF，被我改为：MAC_PROMISCUOUS_MODE_WITH_BAD_CRC
   pRxBuf               = NULL; /* required for macRxReset() to function correctly */
   macRxActive          = MAC_RX_ACTIVE_NO_ACTIVITY;
-  pFuncRxState         = &rxStartIsr;
+  pFuncRxState         = &rxStartIsr;         //函数指针pFuncRxState指向rxStartIsr
   macRxOutgoingAckFlag = 0;
   rxIsrActiveFlag      = 0;
   rxResetFlag          = 0;
@@ -217,7 +219,7 @@ MAC_INTERNAL_API void macRxInit(void)
 
 
 /**************************************************************************************************
- * @fn          macRxRadioPowerUpInit
+ * @fn          macRxRadioPowerUpInit      //上电后RX的初始化
  *
  * @brief       Initialization for after radio first powers up.
  *
@@ -229,7 +231,7 @@ MAC_INTERNAL_API void macRxInit(void)
 MAC_INTERNAL_API void macRxRadioPowerUpInit(void)
 {
   /* set threshold at initial value */
-  MAC_RADIO_SET_RX_THRESHOLD(RX_THRESHOLD_START_LEN);
+  MAC_RADIO_SET_RX_THRESHOLD(RX_THRESHOLD_START_LEN);     //RX_THRESHOLD_START_LEN = MAC_PHY_PHR_LEN + MAC_FCF_FIELD_LEN + MAC_SEQ_NUM_FIELD_LEN + MAC_FCS_FIELD_LEN =1+2+1+2=6字节
 
   /* clear any accidental threshold interrupt that happened as part of power up sequence */
   MAC_RADIO_CLEAR_RX_THRESHOLD_INTERRUPT_FLAG();
@@ -263,7 +265,7 @@ MAC_INTERNAL_API void macRxTxReset(void)
   macRxFilter = RX_FILTER_OFF;
 
   /* return promiscuous mode to default off state */
-  macRxPromiscuousMode(MAC_PROMISCUOUS_MODE_OFF);
+  macRxPromiscuousMode(MAC_PROMISCUOUS_MODE_OFF);    //关闭混杂模式
 }
 
 
@@ -304,7 +306,7 @@ static void rxHaltCleanupFinalStep(void)
   MAC_RADIO_CANCEL_ACK_TX_DONE_CALLBACK();
 
   /* set start of frame threshold */
-  MAC_RADIO_SET_RX_THRESHOLD(RX_THRESHOLD_START_LEN);
+  MAC_RADIO_SET_RX_THRESHOLD(RX_THRESHOLD_START_LEN);     //重新设置成6字节
 
   /* flush the receive FIFO */
   MAC_RADIO_FLUSH_RX_FIFO();
@@ -312,20 +314,20 @@ static void rxHaltCleanupFinalStep(void)
   /* clear any receive interrupt that happened to squeak through */
   MAC_RADIO_CLEAR_RX_THRESHOLD_INTERRUPT_FLAG();
 
-  /* if data buffer has been allocated, free it */
+  /* if data buffer has been allocated, free it */       //如果分配了数据buffer，就释放它
   if (pRxBuf != NULL)
   {
     MEM_FREE((uint8 **)&pRxBuf);
   }
   pRxBuf = NULL; /* needed to indicate buffer is no longer allocated */
 
-  pFuncRxState = &rxStartIsr;
+  pFuncRxState = &rxStartIsr;       //函数指针pFuncRxState指向rxStartIsr
 
   /* if receive was active, perform the post receive updates */
   if (macRxActive || macRxOutgoingAckFlag)
   {
     macRxActive = MAC_RX_ACTIVE_NO_ACTIVITY;
-    macRxOutgoingAckFlag = 0;
+    macRxOutgoingAckFlag = 0;       //0 为不需要应答
 
     rxPostRxUpdates();
   }
@@ -335,8 +337,8 @@ static void rxHaltCleanupFinalStep(void)
 /**************************************************************************************************
  * @fn          macRxThresholdIsr
  *
- * @brief       Interrupt service routine called when bytes in FIFO reach threshold value.
- *              It implements a state machine for receiving a packet.
+ * @brief       Interrupt service routine called when bytes in FIFO reach threshold value.   //重要！当FIFO中字节数达到阈值时，执行的中断服务程序
+ *              It implements a state machine for receiving a packet.                        //读取packet的任何一个部分，都需要通过这个中断服务程序执行
  *
  * @param       none
  *
@@ -358,8 +360,8 @@ MAC_INTERNAL_API void macRxThresholdIsr(void)
    *  logic so it does not perform a reset in the middle of
    *  executing the ISR.
    */
-  rxIsrActiveFlag = 1;
-  (*pFuncRxState)();
+  rxIsrActiveFlag = 1;  //正在执行中断服务程序的标志位
+  (*pFuncRxState)();    //执行当前该执行的中断服务程序，pFuncRxState的函数指针时刻在变
   rxIsrActiveFlag = 0;
 
   /* if a reset occurred during the ISR, peform cleanup here */
@@ -374,8 +376,8 @@ MAC_INTERNAL_API void macRxThresholdIsr(void)
 /*=================================================================================================
  * @fn          rxStartIsr
  *
- * @brief       First ISR state for receiving a packet - compute packet length, allocate
- *              buffer, initialize buffer.  Acknowledgements are handled immediately without
+ * @brief       First ISR state for receiving a packet - compute packet length, allocate         //第一步要执行的服务中断程序，包括计算包长度、分配buffer、初始化buffer
+ *              buffer, initialize buffer.  Acknowledgements are handled immediately without     //如果是ACK，则先处理，不用分配buffer
  *              allocating a buffer.
  *
  * @param       none
@@ -385,15 +387,15 @@ MAC_INTERNAL_API void macRxThresholdIsr(void)
  */
 static void rxStartIsr(void)
 {
-  uint8  addrLen;
+  uint8  addrLen;         //记录地址长度的变量
   uint8  ackWithPending;
-  uint8  dstAddrMode;
-  uint8  srcAddrMode;
+  uint8  dstAddrMode;     //目的地址模式
+  uint8  srcAddrMode;     //源地址模式
 
   MAC_ASSERT(!macRxActive); /* receive on top of receive */
 
   /* indicate rx is active */
-  macRxActive = MAC_RX_ACTIVE_STARTED;
+  macRxActive = MAC_RX_ACTIVE_STARTED;   
 
   /*
    *  For bullet proof functionality, need to see if the receiver was just turned off.
@@ -459,13 +461,13 @@ static void rxStartIsr(void)
    *     additional two bytes  - these bytes are available in case the received frame is an ACK,
    *                             if so, the frame can be verified and responded to immediately,
    *                             if not an ACK, these bytes will be processed normally
-   */
+   */ //其实就是一个ACK的长度5字节 + 物理帧头1字节 =6字节
 
   /* read frame length, frame control field, and sequence number from FIFO */
-  MAC_RADIO_READ_RX_FIFO(rxBuf, MAC_PHY_PHR_LEN + MAC_FCF_FIELD_LEN + MAC_SEQ_NUM_FIELD_LEN);
+  MAC_RADIO_READ_RX_FIFO(rxBuf, MAC_PHY_PHR_LEN + MAC_FCF_FIELD_LEN + MAC_SEQ_NUM_FIELD_LEN);   //读取5个字节到rxBuf
 
   /* bytes to read from FIFO equals frame length minus length of MHR fields just read from FIFO */
-  rxUnreadLen = (rxBuf[0] & PHY_PACKET_SIZE_MASK) - MAC_FCF_FIELD_LEN - MAC_SEQ_NUM_FIELD_LEN;
+  rxUnreadLen = (rxBuf[0] & PHY_PACKET_SIZE_MASK) - MAC_FCF_FIELD_LEN - MAC_SEQ_NUM_FIELD_LEN;  //还未读取的字节数=物理帧头值（帧长度）- 2字节帧控制域 -1字节序列号
 
   /*
    *  Workaround for chip bug #1547.  The receive buffer can sometimes be corrupted by hardware.
@@ -497,19 +499,19 @@ static void rxStartIsr(void)
   /*-------------------------------------------------------------------------------
    *  Process ACKs.
    *
-   *  If this frame is an ACK, process it immediately and exit from here.
-   *  If this frame is not an ACK and transmit is listening for an ACK, let
+   *  If this frame is an ACK, process it immediately and exit from here.    //如果是一个ACK帧，则立即处理，并从此处完成接收
+   *  If this frame is not an ACK and transmit is listening for an ACK, let  //如果不是ACK，而发送状态正在等待一个ACK，则让transmit logic知道收到了一个非ACK帧，结束transmit logic
    *  the transmit logic know an non-ACK was received so transmit can complete.
    *
-   *  In promiscuous mode ACKs are treated like any other frame.
+   *  In promiscuous mode ACKs are treated like any other frame.    //在混杂模式下，ACK帧与其它帧被同等对待
    */
-  if ((MAC_FRAME_TYPE(&rxBuf[1]) == MAC_FRAME_TYPE_ACK) && (rxPromiscuousMode == PROMISCUOUS_MODE_OFF))     //识别出是应答帧，且不是在混杂模式（即收到的ack目的地址是对的）
+  if ((MAC_FRAME_TYPE(&rxBuf[1]) == MAC_FRAME_TYPE_ACK) && (rxPromiscuousMode == PROMISCUOUS_MODE_OFF))     //识别出是应答帧，且不是在混杂模式
   {
     halIntState_t  s;
     uint8 fcsBuf[MAC_FCF_FIELD_LEN];  //定义2个字节的buf存储ACK帧的FCS校验码（其实并非原来的FCS校验码，而是包含了RSSI值与是否校验正确的2个byte，具体看PROPRIETARY_FCS_RSSI的定义）
     /*
-     *  There are guaranteed to be two unread bytes in the FIFO.  By defintion, for ACK frames
-     *  these two bytes will be the FCS.
+     *  There are guaranteed to be two unread bytes in the FIFO.  By defintion, for ACK frames  //FIFO中至少还有2个字节的数据未读
+     *  these two bytes will be the FCS.                                                        //如果是ACK帧，则是FCS校验位
      */
 
     /* read FCS from FIFO (threshold set so bytes are guaranteed to be there) */
@@ -521,7 +523,7 @@ static void rxStartIsr(void)
      */
     HAL_ENTER_CRITICAL_SECTION(s);
 
-    /* see if transmit is listening for an ACK */
+    /* see if transmit is listening for an ACK */     //看看是不是发射端在等待一个ACK
     if (macTxActive == MAC_TX_ACTIVE_LISTEN_FOR_ACK)
     {
       MAC_ASSERT(pMacDataTx != NULL); /* transmit buffer must be present */
@@ -536,7 +538,7 @@ static void rxStartIsr(void)
         corr = PROPRIETARY_FCS_CORRELATION_VALUE(fcsBuf);    //(fcsBuf)[1] & 0x7F,  存储在fcsBuf的第二个字节的低7位
 
         pMacDataTx->internal.mpduLinkQuality = macRadioComputeLQI(rssiDbm, corr);   //其实并没有用corr来计算LQI，只用了RSSI，计算ED，即作为LQI
-        pMacDataTx->internal.correlation = corr;      //pMacDataTx被封装起来了，看不到定义
+        pMacDataTx->internal.correlation = corr;      //
         pMacDataTx->internal.rssi= rssiDbm;
       }
 
@@ -554,7 +556,7 @@ static void rxStartIsr(void)
       if (PROPRIETARY_FCS_CRC_OK(fcsBuf))    //检验fcsBuf的第二个字节的最高位是否为1，如果是1，则FCS检验成功，如果是0，则校验失败
       {
         /* call transmit logic to indicate ACK was received */
-        macTxAckReceivedCallback(MAC_SEQ_NUMBER(&rxBuf[1]), MAC_FRAME_PENDING(&rxBuf[1]));
+        macTxAckReceivedCallback(MAC_SEQ_NUMBER(&rxBuf[1]), MAC_FRAME_PENDING(&rxBuf[1]));   //记录序列号
       }
       else     //FCS检验错误
       {
@@ -566,7 +568,7 @@ static void rxStartIsr(void)
       HAL_EXIT_CRITICAL_SECTION(s);
     }
 
-    /* receive is done, exit from here */
+    /* receive is done, exit from here */   //接收完毕
     rxDone();
     return;
   }
@@ -735,16 +737,16 @@ static void rxStartIsr(void)
   */
 
   /* configure the payload buffer */
-  pRxBuf->msdu.p = (uint8 *) (pRxBuf + 1);    //没看懂
+  pRxBuf->msdu.p = (uint8 *) (pRxBuf + 1);    //payload的指针
   pRxBuf->msdu.len = rxPayloadLen;            //payload的长度
 
   /* set internal values */
-  pRxBuf->mac.srcAddr.addrMode  = srcAddrMode;
-  pRxBuf->mac.dstAddr.addrMode  = dstAddrMode;
+  pRxBuf->mac.srcAddr.addrMode  = srcAddrMode;    //记录源地址模式
+  pRxBuf->mac.dstAddr.addrMode  = dstAddrMode;    //记录目的地址模式
   pRxBuf->mac.timestamp         = MAC_RADIO_BACKOFF_CAPTURE();
   pRxBuf->mac.timestamp2        = MAC_RADIO_TIMER_CAPTURE();
-  pRxBuf->internal.frameType    = MAC_FRAME_TYPE(&rxBuf[1]);
-  pRxBuf->mac.dsn               = MAC_SEQ_NUMBER(&rxBuf[1]);
+  pRxBuf->internal.frameType    = MAC_FRAME_TYPE(&rxBuf[1]);    //记录MAC帧类型
+  pRxBuf->mac.dsn               = MAC_SEQ_NUMBER(&rxBuf[1]);    //记录帧序列号
   pRxBuf->internal.flags        = INTERNAL_FCF_FLAGS(&rxBuf[1]) | ackWithPending;
   pRxBuf->sec.securityLevel     = MAC_SEC_LEVEL_NONE;
 
@@ -756,21 +758,21 @@ static void rxStartIsr(void)
   if (addrLen == 0)  //地址域长度为0byte
   {
     /* no addressing fields to read, prepare for payload interrupts */
-    pFuncRxState = &rxPayloadIsr;
+    pFuncRxState = &rxPayloadIsr;  //pFuncRxState函数指针指向处理payload的中断服务程序
     rxPrepPayload();      //不用处理地址，直接准备接收处理payload
   }
   else
   {
     /* need to read and process addressing fields, prepare for address interrupt */
-    rxNextLen = addrLen;
-    MAC_RADIO_SET_RX_THRESHOLD(rxNextLen);   //需要处理地址域的数据
-    pFuncRxState = &rxAddrIsr;     
+    rxNextLen = addrLen;     // rxNextLen等于地址域长度
+    MAC_RADIO_SET_RX_THRESHOLD(rxNextLen);   //需要处理地址域的数据，接收地址域
+    pFuncRxState = &rxAddrIsr;      //pFuncRxState函数指针指向处理地址的中断服务程序rxAddrIsr
   }
 }
 
 
 /*=================================================================================================
- * @fn          rxAddrIsr
+ * @fn          rxAddrIsr         //处理地址的中断服务程序
  *
  * @brief       Receive ISR state for decoding address.  Reads and stores the address information
  *              from the incoming packet.
@@ -782,7 +784,7 @@ static void rxStartIsr(void)
  */
 static void rxAddrIsr(void)
 {
-  uint8 buf[MAX_ADDR_FIELDS_LEN];
+  uint8 buf[MAX_ADDR_FIELDS_LEN];   //分配buffer
   uint8 dstAddrMode;
   uint8 srcAddrMode;
   uint8  * p;
@@ -790,53 +792,53 @@ static void rxAddrIsr(void)
   MAC_ASSERT(rxNextLen != 0); /* logic assumes at least one address byte in buffer */
 
   /*  read out address fields into local buffer in one shot */
-  MAC_RADIO_READ_RX_FIFO(buf, rxNextLen);
+  MAC_RADIO_READ_RX_FIFO(buf, rxNextLen);       //读取地址域到buf
 
   /* set pointer to buffer with addressing fields */
-  p = buf;
+  p = buf;          //将指针p指向buf
 
   /* destination address */
-  dstAddrMode = MAC_DEST_ADDR_MODE(&rxBuf[1]);
+  dstAddrMode = MAC_DEST_ADDR_MODE(&rxBuf[1]);     //目的地址模式
   if (dstAddrMode != SADDR_MODE_NONE)   
   {
     pRxBuf->mac.srcPanId = pRxBuf->mac.dstPanId = BUILD_UINT16(p[0], p[1]);  //读取PAN id
-    p += MAC_PAN_ID_FIELD_LEN;
+    p += MAC_PAN_ID_FIELD_LEN;  //指针p前移2字节，buf数字前移2字节，将指向目的地址所在字节
     if (dstAddrMode == SADDR_MODE_EXT)   //目的地址包含64位扩展地址
     {
-      sAddrExtCpy(pRxBuf->mac.dstAddr.addr.extAddr, p);
-      p += MAC_EXT_ADDR_FIELD_LEN;
+      sAddrExtCpy(pRxBuf->mac.dstAddr.addr.extAddr, p);   //将目的地址（扩展）复制到pRxBuf->mac.dstAddr.addr.extAddr中
+      p += MAC_EXT_ADDR_FIELD_LEN;      //指针p前移8字节，buf数字前移2字节，将指向源地址所在字节
     }
     else     //目的地址包含16位短地址
     {
-      pRxBuf->mac.dstAddr.addr.shortAddr = BUILD_UINT16(p[0], p[1]);
-      p += MAC_SHORT_ADDR_FIELD_LEN;
+      pRxBuf->mac.dstAddr.addr.shortAddr = BUILD_UINT16(p[0], p[1]);  //将目的地址（短）复制到pRxBuf->mac.dstAddr.addr.shortAddr中
+      p += MAC_SHORT_ADDR_FIELD_LEN;    //指针p前移2字节，buf数字前移2字节，将指向源地址所在字节
     }
   }
 
   /* sources address */
-  srcAddrMode = MAC_SRC_ADDR_MODE(&rxBuf[1]);
+  srcAddrMode = MAC_SRC_ADDR_MODE(&rxBuf[1]);    //源地址模式
   if (srcAddrMode != SADDR_MODE_NONE)
   {
     if (!(pRxBuf->internal.flags & MAC_RX_FLAG_INTRA_PAN))
     {
-      pRxBuf->mac.srcPanId = BUILD_UINT16(p[0], p[1]);
+      pRxBuf->mac.srcPanId = BUILD_UINT16(p[0], p[1]);   //读取源地址的PAN id
       p += MAC_PAN_ID_FIELD_LEN;
     }
     if (srcAddrMode == SADDR_MODE_EXT)    //源地址包含64位扩展地址
     {
-      sAddrExtCpy(pRxBuf->mac.srcAddr.addr.extAddr, p); 
+      sAddrExtCpy(pRxBuf->mac.srcAddr.addr.extAddr, p);      //将源地址（扩展）复制到pRxBuf->mac.srcAddr.addr.extAddr中
     }
     else      //源地址包含16位短地址
     {
-      pRxBuf->mac.srcAddr.addr.shortAddr = BUILD_UINT16(p[0], p[1]);
+      pRxBuf->mac.srcAddr.addr.shortAddr = BUILD_UINT16(p[0], p[1]);  //将源地址（扩展）复制到pRxBuf->mac.srcAddr.addr.shortAddr中
     }
   }
 
   /*-------------------------------------------------------------------------------
    *  Prepare for payload interrupts.
    */
-  pFuncRxState = &rxPayloadIsr;
-  rxPrepPayload();
+  pFuncRxState = &rxPayloadIsr;       //pFuncRxState函数指针指向处理接收数据的中断服务程序rxPayloadIsr
+  rxPrepPayload();            //执行准备接收数据的函数
 }
 
 
@@ -852,15 +854,15 @@ static void rxAddrIsr(void)
  */
 static void rxPrepPayload(void)
 {
-  if (rxPayloadLen == 0)
+  if (rxPayloadLen == 0)    //如果rxPayloadLen=0，即无payload
   {
     MAC_RADIO_SET_RX_THRESHOLD(MAC_FCS_FIELD_LEN);   //准备FCS校验
-    pFuncRxState = &rxFcsIsr;
+    pFuncRxState = &rxFcsIsr;      //pFuncRxState函数指针指向处理FCS的中断服务程序rxFcsIsr
   }
   else
   {
-    rxNextLen = MIN(rxPayloadLen, MAX_PAYLOAD_BYTES_READ_PER_INTERRUPT);
-    MAC_RADIO_SET_RX_THRESHOLD(rxNextLen);
+    rxNextLen = MIN(rxPayloadLen, MAX_PAYLOAD_BYTES_READ_PER_INTERRUPT);   //每次最多读取16个字节的数据，（16这个值可调）
+    MAC_RADIO_SET_RX_THRESHOLD(rxNextLen);    //接收rxNextLen个字节的数据
   }
 }
 
@@ -877,11 +879,24 @@ static void rxPrepPayload(void)
  */
 static void rxPayloadIsr(void)
 {
-  MAC_RADIO_READ_RX_FIFO(pRxBuf->msdu.p, rxNextLen);
-  pRxBuf->msdu.p += rxNextLen;    //没懂这里在干嘛
-  rxPayloadLen -= rxNextLen;
-
-  rxPrepPayload();
+  MAC_RADIO_READ_RX_FIFO(pRxBuf->msdu.p, rxNextLen);   //将rxNextLen个数据读取到pRxBuf->msdu.p中
+  
+  //add by jionghong  我自己加的，为了输出读取到的payload
+     halIntState_t   intState;
+  // Hold off interrupts
+  HAL_ENTER_CRITICAL_SECTION(intState);
+ // HalUARTWrite(0, &rxNextLen , 1);
+  HalUARTWrite(0, pRxBuf->msdu.p , rxNextLen);
+ // HalUARTWrite(0, "\n", 1);         //回车换行
+  // Release interrupts
+  HAL_EXIT_CRITICAL_SECTION(intState);
+  
+  
+  
+  pRxBuf->msdu.p += rxNextLen;    //指针指向的更新，随着数据的接收，不断向前
+  rxPayloadLen -= rxNextLen;      //更新待读取的payload字节数
+  
+  rxPrepPayload();   //重新设置读取payload的字节数
 }
 
 
@@ -897,7 +912,7 @@ static void rxPayloadIsr(void)
  */
 static void rxFcsIsr(void)
 {
-  uint8 crcOK;
+  uint8 crcOK;    //用于记录是否通过CRC校验的变量
   uint8 ackWithPending = 0;
 
   /* read FCS, rxBuf is now available storage */
@@ -919,7 +934,11 @@ static void rxFcsIsr(void)
    *  the frame is always passed up.  Frames with a bad CRC are also passed up *if*
    *  a special variant of promiscuous mode is active.
    */
-  if (crcOK || (rxPromiscuousMode == MAC_PROMISCUOUS_MODE_WITH_BAD_CRC))
+  
+  //add by jionghong
+ // rxPromiscuousMode = MAC_PROMISCUOUS_MODE_WITH_BAD_CRC;
+  
+  if ( crcOK || (rxPromiscuousMode == MAC_PROMISCUOUS_MODE_WITH_BAD_CRC))    //如果CRC校验通过，且是非混杂模式
   {
     int8 rssiDbm;
     uint8 corr;
@@ -936,9 +955,9 @@ static void rxFcsIsr(void)
     macRxOffRequest();
 
     /* decode RSSI and correlation values */
-    rssiDbm = PROPRIETARY_FCS_RSSI(rxBuf) + MAC_RADIO_RSSI_OFFSET;
+    rssiDbm = PROPRIETARY_FCS_RSSI(rxBuf) + MAC_RADIO_RSSI_OFFSET;      //提取RSSI值，并加上offest
     MAC_RADIO_RSSI_LNA_OFFSET(rssiDbm);
-    corr = PROPRIETARY_FCS_CORRELATION_VALUE(rxBuf);
+    corr = PROPRIETARY_FCS_CORRELATION_VALUE(rxBuf);      //提取correlation值
 
     /* Read the source matching result back */
     if( macSrcMatchIsEnabled && MAC_RADIO_SRC_MATCH_RESULT() )
@@ -955,7 +974,7 @@ static void rxFcsIsr(void)
 
     /* set the MSDU pointer to point at start of data */
     pRxBuf->msdu.p = (uint8 *) (pRxBuf + 1);
-
+    
     /* finally... execute callback function */
     macRxCompleteCallback(pRxBuf);
     pRxBuf = NULL; /* needed to indicate buffer is no longer allocated */
@@ -967,6 +986,8 @@ static void rxFcsIsr(void)
      *  (It's OK to cancel the outgoing ACK even if an ACK was not requested.  It's
      *  slightly more efficient to do so.)
      */
+    
+    
     MAC_RADIO_CANCEL_ACK_TX_DONE_CALLBACK();
     macRxOutgoingAckFlag = 0;
 
@@ -977,7 +998,7 @@ static void rxFcsIsr(void)
 
   /* reset threshold level, reset receive state, and complete receive logic */
   MAC_RADIO_SET_RX_THRESHOLD(RX_THRESHOLD_START_LEN);   //一个接收任务完成，重置一些初始值
-  pFuncRxState = &rxStartIsr;
+  pFuncRxState = &rxStartIsr;       //pFuncRxState函数指针指向处刚接收packet的中断服务程序rxStartIsr
   rxDone();
 }
 
@@ -1165,14 +1186,14 @@ MAC_INTERNAL_API void macRxPromiscuousMode(uint8 mode)
 
   if (rxPromiscuousMode == MAC_PROMISCUOUS_MODE_OFF)
   {
-      MAC_RADIO_TURN_ON_RX_FRAME_FILTERING();
+      MAC_RADIO_TURN_ON_RX_FRAME_FILTERING();       //关闭混杂模式
   }
   else
   {
     MAC_ASSERT((mode == MAC_PROMISCUOUS_MODE_WITH_BAD_CRC)   ||
                (mode == MAC_PROMISCUOUS_MODE_COMPLIANT));  /* invalid mode */
 
-    MAC_RADIO_TURN_OFF_RX_FRAME_FILTERING();
+    MAC_RADIO_TURN_OFF_RX_FRAME_FILTERING();        //开启混杂模式
   }
 }
 
