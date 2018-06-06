@@ -18,3 +18,6 @@ Zstack 协议栈中，MAC层最重要的一个文件是mac_rx.c，里面包含�
  
 //处理FCS的中断服务程序:
  static void rxFcsIsr(void);        
+
+也可看我的博客：
+https://blog.csdn.net/gjh13/article/details/80459999
